@@ -1,0 +1,14 @@
+{
+  "BlockRules": [
+    {
+      "Type": "User",
+      "Fields": ["email", "createdAt"],
+      "UnderField": "users"
+    },
+    {
+      "Type": "Post",
+      "Fields": ["internalNotes"],
+      "UnderField": "posts"
+    }
+  ]
+}

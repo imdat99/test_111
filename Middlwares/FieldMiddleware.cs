@@ -1,7 +1,10 @@
 ﻿using Acm.Api.Helpers;
+using Acm.Api.Models;
 using FluentValidation;
 using FluentValidation.Results;
 using HotChocolate;
+using HotChocolate.Language;
+using HotChocolate.Language.Visitors;
 using HotChocolate.Resolvers;
 using HotChocolate.Types;
 using System;
@@ -63,8 +66,8 @@ namespace Acm.Api.Middlewares
                         { "memberNames", error.PropertyName }
                     },
                     syntaxNode.Location != null ?
-                new List<Location> {
-                    new Location(syntaxNode.Location.Line, syntaxNode.Location.Column)
+                new List<HotChocolate.Location> {
+                    new HotChocolate.Location(syntaxNode.Location.Line, syntaxNode.Location.Column)
                 } : null
                     );
                 context.ReportError(ier);
@@ -103,7 +106,7 @@ namespace Acm.Api.Middlewares
     {
         public string[] FieldNames { get; }
         public bool BlockFieldAccess { get; }
-        
+
         /// <summary>
         /// Xác định có áp dụng việc chặn cho các field con bên trong field cha hay không
         /// </summary>
@@ -113,7 +116,7 @@ namespace Acm.Api.Middlewares
         /// Chặn các field được chỉ định và các field con bên trong chúng (nếu có)
         /// </summary>
         /// <param name="fieldNames">Danh sách tên field cần chặn</param>
-        public IgnoreFieldsAttribute(params string[] fieldNames) 
+        public IgnoreFieldsAttribute(params string[] fieldNames)
             : this(true, true, fieldNames) { }
 
         /// <summary>
@@ -121,7 +124,7 @@ namespace Acm.Api.Middlewares
         /// </summary>
         /// <param name="blockFieldAccess">Nếu true, chặn hoàn toàn field. Nếu false, chỉ đặt giá trị về mặc định</param>
         /// <param name="fieldNames">Danh sách tên field cần chặn</param>
-        public IgnoreFieldsAttribute(bool blockFieldAccess, params string[] fieldNames) 
+        public IgnoreFieldsAttribute(bool blockFieldAccess, params string[] fieldNames)
             : this(blockFieldAccess, true, fieldNames) { }
 
         /// <summary>
@@ -141,10 +144,12 @@ namespace Acm.Api.Middlewares
     public class IgnoreFieldsMiddleware
     {
         private readonly FieldDelegate _next;
-
-        public IgnoreFieldsMiddleware(FieldDelegate next)
+        private readonly MySyntaxWalker _syntaxWalker;
+        private readonly BlockConfig _blockConfig;
+        public IgnoreFieldsMiddleware(FieldDelegate next, BlockConfig blockConfig)
         {
             _next = next;
+            _syntaxWalker = new MySyntaxWalker(blockConfig);
         }
 
         public async Task InvokeAsync(IMiddlewareContext context)
@@ -152,6 +157,24 @@ namespace Acm.Api.Middlewares
             // Kiểm tra field hiện tại có bị chặn không
             var currentField = context.Selection.Field;
             var currentFieldName = currentField.Name;
+            var objectType = context.ObjectType.Name;             // "User"
+            var operationName = context.Operation?.Name;  // "userPaging" hoặc "userDetail"
+            var document = context.Operation!.Document;
+            // document.Visit(context.Operation);
+            var syntax = _syntaxWalker.Visit(document, null);
+            var pathSegments = context.Path.ToList();
+            if (pathSegments.Contains("todos"))
+            {
+                context.ReportError(ErrorBuilder.New()
+                                .SetMessage($"Field '{currentFieldName}' bị chặn bởi chính sách bảo mật.")
+                                .SetCode("BLOCKED_FIELD")
+                                .SetPath(context.Path)
+                                .Build());
+                context.Result = null;
+                return;
+            }
+            var selections = context.Selection.SyntaxNode?.SelectionSet?.Selections;
+
             // 1. Lấy ra các IgnoreFieldsAttribute từ mọi resolver
             var resolvers = currentField.DeclaringType?.Fields
                 .Where(f => f.Member != null)
@@ -189,4 +212,50 @@ namespace Acm.Api.Middlewares
             // vì yêu cầu là chặn hoàn toàn việc xử lý field
         }
     }
+    public class MySyntaxWalker : SyntaxWalker<object?>
+    {
+        // protected override ISyntaxVisitorAction OnBeforeEnter(OperationDefinitionNode node, object? context)
+        // {
+        //     // Thực hiện hành động trước khi vào OperationDefinitionNode
+        //     Console.WriteLine($"Đang chuẩn bị vào Operation: {node.Name?.Value ?? "<unnamed>"}");
+
+        //     // Trả về hành động tiếp tục duyệt cây cú pháp
+        //     return Continue;
+        // }
+        private readonly List<BlockRule> _rules;
+        private readonly List<(string ParentField, string BlockedField)> _violations = new();
+        private readonly Stack<string> _fieldPath = new();
+
+        public IReadOnlyList<(string ParentField, string BlockedField)> Violations => _violations;
+        public MySyntaxWalker(BlockConfig blockConfig)
+        {
+            _rules = blockConfig.BlockRules;
+        }
+        protected override ISyntaxVisitorAction Enter(OperationDefinitionNode node, object? context)
+        {
+            // Xử lý khi vào OperationDefinitionNode
+            _fieldPath.Push(node.Name!.Value);
+
+            if (_fieldPath.Count >= 2)
+            {
+                var parent = _fieldPath.Skip(1).First(); // immediate parent
+                var current = _fieldPath.Peek();
+
+                var matchedRule = _rules.FirstOrDefault(r => r.UnderField == parent);
+                if (matchedRule != null && matchedRule.Fields.Contains(current))
+                {
+                    _violations.Add((parent, current));
+                }
+            }
+
+            return Continue;
+        }
+
+        protected override ISyntaxVisitorAction Leave(OperationDefinitionNode node, object? context)
+        {
+            _fieldPath.Pop();
+            return Continue;
+        }
+    }
+
 }

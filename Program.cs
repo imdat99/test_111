@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Acm.Api.Extensions;
 using Acm.Api.GraphQL;
 using Acm.Api.Middlewares;
@@ -15,14 +16,14 @@ if (pathIndex > 0)
 }
 
 var builder = WebApplication.CreateBuilder(args);
-
+var blockConfig = JsonSerializer.Deserialize<BlockConfig>(File.ReadAllText("blockfields.json"))!;
 builder.Logging.AddSimpleConsole(options =>
 {
     options.IncludeScopes = true;
     options.SingleLine = true;
     options.TimestampFormat = "[yyyy-MM-dd HH:mm:ss] ";
 });
-
+builder.Services.AddSingleton(blockConfig);
 builder.Services.AddControllers();
 
 builder.Services.AddCustomServices(builder.Configuration)
