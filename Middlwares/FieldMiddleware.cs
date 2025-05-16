@@ -144,116 +144,73 @@ namespace Acm.Api.Middlewares
     public class IgnoreFieldsMiddleware
     {
         private readonly FieldDelegate _next;
-        private readonly MySyntaxWalker _syntaxWalker;
         private readonly BlockConfig _blockConfig;
         public IgnoreFieldsMiddleware(FieldDelegate next, BlockConfig blockConfig)
         {
             _next = next;
-            _syntaxWalker = new MySyntaxWalker(blockConfig);
+            _blockConfig = blockConfig;
         }
 
         public async Task InvokeAsync(IMiddlewareContext context)
         {
-            // Kiểm tra field hiện tại có bị chặn không
-            var currentField = context.Selection.Field;
-            var currentFieldName = currentField.Name;
-            var objectType = context.ObjectType.Name;             // "User"
-            var operationName = context.Operation?.Name;  // "userPaging" hoặc "userDetail"
             var document = context.Operation!.Document;
-            // document.Visit(context.Operation);
+            var _syntaxWalker = new MySyntaxWalker(_blockConfig);
             var syntax = _syntaxWalker.Visit(document, null);
-            var pathSegments = context.Path.ToList();
-            if (pathSegments.Contains("todos"))
+            var violations = _syntaxWalker.Violations.Distinct().ToList();
+            var path = String.Join(".", context.Path.ToList().OfType<string>());
+            if (violations.Count != 0)
             {
-                context.ReportError(ErrorBuilder.New()
-                                .SetMessage($"Field '{currentFieldName}' bị chặn bởi chính sách bảo mật.")
-                                .SetCode("BLOCKED_FIELD")
-                                .SetPath(context.Path)
-                                .Build());
-                context.Result = null;
-                return;
-            }
-            var selections = context.Selection.SyntaxNode?.SelectionSet?.Selections;
-
-            // 1. Lấy ra các IgnoreFieldsAttribute từ mọi resolver
-            var resolvers = currentField.DeclaringType?.Fields
-                .Where(f => f.Member != null)
-                .Select(f => f.Member);
-            var ignoreAttr = currentField.Member?.GetCustomAttribute<IgnoreFieldsAttribute>();
-            if (resolvers != null)
-            {
-                foreach (var resolver in resolvers)
+                violations.ForEach(violation =>
                 {
-                    var ignoreAttrs = new List<IgnoreFieldsAttribute>();
-                    ignoreAttrs.AddRange(resolver?.GetCustomAttributes<IgnoreFieldsAttribute>() ?? []);
-                    if (ignoreAttr != null) ignoreAttrs.Add(ignoreAttr);
-
-                    foreach (var attr in ignoreAttrs)
-                    {
-                        if (attr.FieldNames.Contains(currentFieldName, StringComparer.OrdinalIgnoreCase))
-                        {
-                            // Chặn field và trả về lỗi
-                            context.ReportError(ErrorBuilder.New()
-                                .SetMessage($"Field '{currentFieldName}' bị chặn bởi chính sách bảo mật.")
-                                .SetCode("BLOCKED_FIELD")
-                                .SetPath(context.Path)
-                                .Build());
-                            context.Result = null;
-                            return;
-                        }
-                    }
-                }
+                    var blockedField = violation;
+                    context.ReportError(ErrorBuilder.New()
+                        .SetMessage($"Field '{blockedField}' bị chặn bởi chính sách bảo mật.")
+                        .SetCode("BLOCKED_FIELD")
+                        .SetPath(context.Path)
+                        .Build());
+                    context.Result = null;
+                    return;
+                });
             }
-
-            // 2. Tiếp tục xử lý nếu field không bị chặn
             await _next(context);
-
-            // 3. Sau khi xử lý field, không còn xử lý phần đặt giá trị mặc định nữa
-            // vì yêu cầu là chặn hoàn toàn việc xử lý field
         }
     }
     public class MySyntaxWalker : SyntaxWalker<object?>
     {
-        // protected override ISyntaxVisitorAction OnBeforeEnter(OperationDefinitionNode node, object? context)
-        // {
-        //     // Thực hiện hành động trước khi vào OperationDefinitionNode
-        //     Console.WriteLine($"Đang chuẩn bị vào Operation: {node.Name?.Value ?? "<unnamed>"}");
-
-        //     // Trả về hành động tiếp tục duyệt cây cú pháp
-        //     return Continue;
-        // }
         private readonly List<BlockRule> _rules;
-        private readonly List<(string ParentField, string BlockedField)> _violations = new();
-        private readonly Stack<string> _fieldPath = new();
+        private readonly List<string> _violations = new();
+        public IReadOnlyList<string> Violations => _violations;
 
-        public IReadOnlyList<(string ParentField, string BlockedField)> Violations => _violations;
         public MySyntaxWalker(BlockConfig blockConfig)
         {
             _rules = blockConfig.BlockRules;
         }
+
         protected override ISyntaxVisitorAction Enter(OperationDefinitionNode node, object? context)
         {
-            // Xử lý khi vào OperationDefinitionNode
-            _fieldPath.Push(node.Name!.Value);
-
-            if (_fieldPath.Count >= 2)
+            foreach (var rootField in node.SelectionSet.Selections.OfType<FieldNode>())
             {
-                var parent = _fieldPath.Skip(1).First(); // immediate parent
-                var current = _fieldPath.Peek();
-
-                var matchedRule = _rules.FirstOrDefault(r => r.UnderField == parent);
-                if (matchedRule != null && matchedRule.Fields.Contains(current))
-                {
-                    _violations.Add((parent, current));
-                }
+                TraverseField(rootField, rootField.Name.Value, rootField.Name.Value);
             }
 
             return Continue;
         }
 
+        private void TraverseField(FieldNode field, string currentPath, string rootQuery)
+        {
+            _violations.AddRange(_rules.Where(r => r.Query == rootQuery).SelectMany(r => r.Fields.Select(field => string.Join(".", [r.Query, field]))).Where(x => x == currentPath));
+            if (field.SelectionSet != null)
+            {
+                foreach (var child in field.SelectionSet.Selections.OfType<FieldNode>())
+                {
+                    var childPath = $"{currentPath}.{child.Name.Value}";
+                    TraverseField(child, childPath, rootQuery);
+                }
+            }
+        }
+
         protected override ISyntaxVisitorAction Leave(OperationDefinitionNode node, object? context)
         {
-            _fieldPath.Pop();
             return Continue;
         }
     }

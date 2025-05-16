@@ -94,7 +94,7 @@ public static class ServiceCollectionExtensions
         services.AddGraphQLServer()
                 .UseField<FieldMiddleware>()    //validation fields
                                                 //.UseRequest<RequestMiddleware>()//check authen then make something after
-                // .AddDiagnosticEventListener<DiagnosticMiddleware>()
+                                                // .AddDiagnosticEventListener<DiagnosticMiddleware>()
                 .AddQueryType<AcmQueries>()
                 .AddMutationType<AcmMutations>()
                 .AddCustomTypes()

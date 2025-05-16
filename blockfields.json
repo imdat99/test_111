@@ -1,14 +1,12 @@
 {
   "BlockRules": [
     {
-      "Type": "User",
-      "Fields": ["email", "createdAt"],
-      "UnderField": "users"
+      "Fields": ["email", "createdAt", "todos.isCompleted"],
+      "Query": "users"
     },
     {
-      "Type": "Post",
-      "Fields": ["internalNotes"],
-      "UnderField": "posts"
+      "Fields": ["todos.title"],
+      "Query": "user"
     }
   ]
 }
